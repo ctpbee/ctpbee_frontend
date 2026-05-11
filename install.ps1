@@ -58,23 +58,31 @@ if ([int]$major -lt 3 -or ([int]$major -eq 3 -and [int]$minor -lt 8)) {
 }
 
 # ── Virtual environment ──
+$UseVenv = $false
 if (-not $NoVenv) {
     if (Test-Path $VenvDir) {
         Write-OK "venv already exists: $VenvDir"
+        $UseVenv = $true
     } else {
-        Write-Info "Creating virtual environment..."
-        & $PythonExe -m venv $VenvDir
-        Write-OK "venv created"
+        $answer = Read-Host "  Create Python virtual environment (.venv)? [Y/n]"
+        if ($answer -notmatch '^[Nn]') {
+            Write-Info "Creating virtual environment..."
+            & $PythonExe -m venv $VenvDir
+            Write-OK "venv created"
+            $UseVenv = $true
+        } else {
+            Write-Info "Skipped venv — using system Python"
+        }
     }
+}
+
+if ($UseVenv) {
     $PipExe = Join-Path $VenvDir "Scripts\pip.exe"
     $PythonVenv = Join-Path $VenvDir "Scripts\python.exe"
     Write-Info "Upgrading pip..."
     & $PipExe install --quiet --upgrade pip 2>$null
 } else {
-    $PipExe = $PythonExe.Replace("python", "pip")
-    if (-not (Get-Command $PipExe -ErrorAction SilentlyContinue)) {
-        $PipExe = "$PythonExe -m pip"
-    }
+    $PipExe = "$PythonExe -m pip"
     $PythonVenv = $PythonExe
 }
 
@@ -189,12 +197,13 @@ Write-Host ""
 Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor White
 Write-Host "  Installation Complete" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Frontend:  file:///$($frontendPath -replace '\\','/')" -ForegroundColor Cyan
-Write-Host "  Server:    $PythonVenv $ScriptDir\server.py" -ForegroundColor Cyan
+Write-Host "  Frontend:  http://localhost:8000/ctpbee-frontend/index.html" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  Start manually:" -ForegroundColor White
-Write-Host "    $VenvDir\Scripts\activate" -ForegroundColor DarkGray
-Write-Host "    python $ScriptDir\server.py" -ForegroundColor DarkGray
+Write-Host "  Start (一键启动):" -ForegroundColor White
+if ($UseVenv) {
+    Write-Host "    $VenvDir\Scripts\activate" -ForegroundColor DarkGray
+}
+Write-Host "    python $ScriptDir\start.py" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor White
 Write-Host ""

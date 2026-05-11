@@ -66,36 +66,44 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 - 安装依赖
 - 生成 `.env` 配置文件
 
-### 2. 启动桥接服务器
+### 2. 一键启动
 
 ```bash
-# 需要 ctpbee 运行中 + Redis 可用
-source .venv/bin/activate  # Linux/macOS
-# 或 .venv\Scripts\activate  # Windows
-python server.py
+# 安装完成后，一个命令同时启动后端桥接 + 前端页面
+
+# 如果使用了虚拟环境 (默认行为):
+source .venv/bin/activate    # Linux/macOS
+# .venv\Scripts\activate     # Windows
+python start.py
+
+# 如果跳过了虚拟环境，直接运行:
+python start.py
 ```
 
-也可以通过环境变量配置：
+启动后自动打开浏览器访问终端，或手动访问:
+- 交易终端: http://localhost:8000/ctpbee-frontend/index.html
+- WebSocket: ws://localhost:8765
+
+**可选参数**:
 
 ```bash
-CTPBEE_REDIS_HOST=192.168.1.100 CTPBEE_WS_PORT=9000 python server.py
+python start.py --dev         # 开发模式：文件变更自动重载桥接服务器
+python start.py --no-bridge   # 仅启动前端 HTTP 服务（演示模式）
+python start.py --no-http     # 仅启动桥接服务器
 ```
 
-### 3. 打开前端
+### 3. 启动 ctpbee 引擎（实盘必需）
 
-直接浏览器打开 `ctpbee-frontend/index.html`，或启动 HTTP 服务：
+启动 ctpbee 策略引擎（Dispatcher 模式），需要 Redis 运行中：
 
 ```bash
-cd ctpbee-frontend
-python -m http.server 8000
-# 访问 http://localhost:8000/ctpbee-frontend/index.html
+# 参考 ctpbee/examples/login.py
+python your_strategy.py    # 确保 work_mode=Mode.DISPATCHER
 ```
+
+无 ctpbee 后端时前端自动降级为模拟演示模式。
 
 默认登录凭据：`admin` / `admin`
-
-### 4. 配置 Dispatcher 地址
-
-登录页底部的 `Dispatcher Address` 填写桥接服务器地址（默认 `ws://localhost:8765`），地址会自动持久化。
 
 ## 配置项
 
@@ -117,6 +125,7 @@ python -m http.server 8000
 ```
 ctpbee-frontend/
 ├── README.md
+├── start.py                  # 统一启动器（一键启动 Bridge + HTTP）
 ├── requirements.txt          # Python 依赖
 ├── server.py                 # WebSocket ↔ Redis 桥接服务器
 ├── install.sh                # Linux/macOS 安装脚本

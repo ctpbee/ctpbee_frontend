@@ -45,25 +45,41 @@ check_python() {
   ok "Python $ver"
 }
 
-# ── Virtual environment ──
+# ── Virtual environment (optional) ──
+USE_VENV=false
 setup_venv() {
   if [[ -d "$VENV_DIR" ]]; then
     ok "venv already exists: $VENV_DIR"
-  else
-    info "Creating virtual environment..."
-    "$PYTHON" -m venv "$VENV_DIR"
-    ok "venv created"
+    source "$VENV_DIR/bin/activate"
+    "$VENV_DIR/bin/pip" install --quiet --upgrade pip
+    USE_VENV=true
+    return 0
   fi
-  # Activate
+
+  echo ""
+  read -r -p "  Create Python virtual environment (.venv)? [Y/n] " answer
+  if [[ "$answer" =~ ^[Nn]$ ]]; then
+    info "Skipped venv — using system Python"
+    USE_VENV=false
+    return 0
+  fi
+
+  info "Creating virtual environment..."
+  "$PYTHON" -m venv "$VENV_DIR"
+  ok "venv created"
   source "$VENV_DIR/bin/activate"
-  # Ensure pip is current
   "$VENV_DIR/bin/pip" install --quiet --upgrade pip
+  USE_VENV=true
 }
 
 # ── Dependencies ──
 install_deps() {
   info "Installing Python dependencies..."
-  "$VENV_DIR/bin/pip" install --quiet -r "$SCRIPT_DIR/requirements.txt"
+  if [[ "$USE_VENV" == "true" ]]; then
+    "$VENV_DIR/bin/pip" install --quiet -r "$SCRIPT_DIR/requirements.txt"
+  else
+    "$PYTHON" -m pip install --quiet -r "$SCRIPT_DIR/requirements.txt"
+  fi
   ok "Dependencies installed"
 }
 
@@ -214,12 +230,13 @@ summary() {
   echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${BOLD}  Installation Complete${NC}"
   echo ""
-  echo -e "  Frontend:  ${CYAN}file://$SCRIPT_DIR/ctpbee-frontend/index.html${NC}"
-  echo -e "  Server:    ${GREEN}$VENV_DIR/bin/python $SCRIPT_DIR/server.py${NC}"
+  echo -e "  Frontend:  ${CYAN}http://localhost:8000/ctpbee-frontend/index.html${NC}"
   echo ""
-  echo -e "  Start manually:"
-  echo -e "    source $VENV_DIR/bin/activate"
-  echo -e "    python $SCRIPT_DIR/server.py"
+  echo -e "  Start (一键启动):"
+  if [[ "$USE_VENV" == "true" ]]; then
+    echo -e "    source $VENV_DIR/bin/activate"
+  fi
+  echo -e "    python $SCRIPT_DIR/start.py"
   echo ""
   echo -e "  Manage service:"
   if command -v systemctl &>/dev/null; then

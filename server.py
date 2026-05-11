@@ -77,6 +77,11 @@ def from_ctpbee(inner: dict) -> dict:
 # ── Connected WebSocket clients ──
 clients: set[Any] = set()
 
+# ── Redis subscriber lifecycle ──
+redis_task: asyncio.Task | None = None
+redis_ready = asyncio.Event()
+redis_start_lock = asyncio.Lock()
+
 # ── Cached contracts (indexed by symbol) ──
 cached_contracts: dict[str, dict] = {}
 
@@ -104,6 +109,10 @@ def parse_ctpbee_message(raw: str) -> dict | None:
 
     if not isinstance(inner, dict):
         return None
+
+    if inner.get("type") == "init_complete":
+        inner["type"] = "init"
+        return inner
 
     # Determine entity type by characteristic fields
     # Note: contract MUST come before tick — some contracts also match tick conditions
@@ -144,13 +153,7 @@ async def redis_subscriber():
             await pubsub.subscribe(TICK_KERNEL, ORDER_DOWN_KERNEL)
             print(f"[redis] subscribed to: {TICK_KERNEL}, {ORDER_DOWN_KERNEL}")
 
-            # Immediately query contracts from ctpbee Dispatcher
-            query_envelope = json.dumps({
-                "data": json.dumps({"index": 0, "name": "ctpbee"}),
-                "index": 0,
-            }, ensure_ascii=False)
-            await r.publish(ORDER_UP_KERNEL, query_envelope)
-            print(f"[redis] sent query_contracts to {ORDER_UP_KERNEL}")
+            redis_ready.set()
 
             async for message in pubsub.listen():
                 if message["type"] != "message":
@@ -160,6 +163,8 @@ async def redis_subscriber():
                     continue
 
                 msg_type = parsed.get("type", "?")
+                if parsed.get("type") == "init":
+                    print(f"[redis] recv channel={message['channel']} type=init count={parsed.get('count', '?')}")
                 print(f"[redis] recv channel={message['channel']} type={msg_type}")
 
                 # Cache contracts for new clients
@@ -189,6 +194,15 @@ async def redis_subscriber():
             if r:
                 try: await r.close()
                 except Exception: pass
+
+
+async def ensure_redis_started():
+    """Start the Redis subscriber if not already running. Thread-safe."""
+    global redis_task
+    async with redis_start_lock:
+        if redis_task is None or redis_task.done():
+            redis_task = asyncio.create_task(redis_subscriber())
+            print("[server] Redis subscriber started on first client login")
 
 
 async def redis_publisher(msg: dict):
@@ -276,6 +290,7 @@ async def ws_handler(websocket):
                 }, ensure_ascii=False))
 
             elif action == "query_contracts":
+                await ensure_redis_started()
                 query_data = {"index": cmd.get("index", 0), "name": "ctpbee"}
                 await redis_publisher({"data": query_data, "index": cmd.get("index", 0)})
                 await websocket.send(json.dumps({
@@ -309,7 +324,7 @@ def check_ctpbee():
 async def main():
     check_ctpbee()
     print(f"  ctpbee Frontend Bridge Server")
-    print(f"  Redis: {REDIS_HOST}:{REDIS_PORT} db={REDIS_DB}")
+    print(f"  Redis: {REDIS_HOST}:{REDIS_PORT} db={REDIS_DB} (connect on login)")
     print(f"  WebSocket: {WS_HOST}:{WS_PORT}")
 
     stop = asyncio.Event()
@@ -327,13 +342,17 @@ async def main():
         except (ValueError, OSError):
             pass
 
-    redis_task = asyncio.create_task(redis_subscriber())
-
     async with ws_serve(ws_handler, WS_HOST, WS_PORT):
-        print(f"[server] ready — open ctpbee-frontend/index.html to connect")
+        print(f"[server] ready — waiting for client login...")
+        print(f"  open http://localhost:8000/ctpbee-frontend/index.html")
         await stop.wait()
 
-    redis_task.cancel()
+    if redis_task and not redis_task.done():
+        redis_task.cancel()
+        try:
+            await redis_task
+        except asyncio.CancelledError:
+            pass
     print("[server] stopped.")
 
 
