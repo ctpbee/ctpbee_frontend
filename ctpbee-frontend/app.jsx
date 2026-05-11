@@ -550,6 +550,78 @@ function App() {
     orders.forEach((o) => handleCancel(o.id));
   }
 
+  // ── Close all positions ──
+  function handleCloseAll(positions) {
+    const bridge = window.__wsbridge;
+    if (!bridge || !bridge.isConnected()) {
+      pushToast({
+        kind: "err",
+        title: "Not Connected",
+        msg: "WebSocket 未连接，无法平仓",
+      });
+      return;
+    }
+    if (!confirm(`确认全部平仓？共 ${positions.length} 个持仓`)) return;
+
+    positions.forEach((p) => {
+      const c = M.contracts.find((x) => x.sym === p.sym);
+      if (!c) return;
+      const closeDir = p.dir === "LONG" ? "SHORT" : "LONG";
+
+      const sendClose = (offset, vol) => {
+        if (vol <= 0) return;
+        // 用涨跌停价打限价单：买平用涨停价，卖平用跌停价 → 保证成交
+        const isBuy = closeDir === "LONG";
+        const limitPx = isBuy
+          ? c.limit_up || c.last * 1.1
+          : c.limit_down || c.last * 0.9;
+        const index = Date.now() % 100000;
+        M.orderLog.unshift({
+          time: window.nowHMS(),
+          sym: p.sym,
+          evt: "submit",
+          msg: `全平: ${dirZh(closeDir, offset)} ${vol}手 @${fmtPx(limitPx, c.tick)}`,
+          kind: "info",
+        });
+        bridge
+          .send("order", {
+            symbol: p.sym,
+            exchange: p.ex,
+            direction: closeDir,
+            offset,
+            price: limitPx,
+            volume: vol,
+            order_type: "LIMIT",
+            index,
+          })
+          .catch((err) => {
+            M.orderLog.unshift({
+              time: window.nowHMS(),
+              sym: p.sym,
+              evt: "rejected",
+              msg: `全平发送失败: ${err.message || "connection lost"}`,
+              kind: "err",
+            });
+          });
+      };
+
+      // SHFE/INE require split close: 平今 (today) vs 平昨 (yesterday)
+      const isSplitEx = p.ex === "SHFE" || p.ex === "INE";
+      if (isSplitEx) {
+        sendClose("CLOSETODAY", p.tdVol);
+        sendClose("CLOSEYESTERDAY", p.ydVol);
+      } else {
+        sendClose("CLOSE", p.vol);
+      }
+    });
+    pushToast({
+      kind: "ok",
+      title: "Close All Sent",
+      msg: `已发送 ${positions.length} 笔平仓单`,
+    });
+    force((n) => n + 1);
+  }
+
   function toggleFav(sym) {
     const c = M.contracts.find((x) => x.sym === sym);
     if (c) {
@@ -595,10 +667,15 @@ function App() {
     return acc + (p.last - p.avgPx) * sign * p.vol * (c ? c.mult : 1);
   }, 0);
 
+  const mdLive = M.contracts.some((c) => c.last > 0);
+  const tdLive = M.account.balance > 0;
+
   const connLabel = wsConnected ? "DSP" : "OFF";
-  const connTitle = wsConnected
-    ? `Dispatcher connected · ${wsLatency}ms`
-    : "Not connected · start server.py";
+  const connTitle = [
+    mdLive ? "MD ✓" : "MD ✗",
+    tdLive ? "TD ✓" : "TD ✗",
+    wsConnected ? "DSP ✓" : "DSP ✗",
+  ].join(" · ");
 
   // ── Login gate ──
   if (appState === "login") {
@@ -718,9 +795,27 @@ function App() {
           >
             行情
           </div>
-          <div className="item">账户</div>
-          <div className="item">分析</div>
-          <div className="item">日志</div>
+          <div
+            className="item"
+            title="即将上线"
+            style={{ opacity: 0.45, cursor: "not-allowed" }}
+          >
+            账户
+          </div>
+          <div
+            className="item"
+            title="即将上线"
+            style={{ opacity: 0.45, cursor: "not-allowed" }}
+          >
+            分析
+          </div>
+          <div
+            className="item"
+            title="即将上线"
+            style={{ opacity: 0.45, cursor: "not-allowed" }}
+          >
+            日志
+          </div>
         </div>
         <div className="topstats">
           <div className="stat">
@@ -759,9 +854,22 @@ function App() {
         </div>
         <div className="conn" title={connTitle}>
           <div className="dots">
-            <div className={`dot ${wsConnected ? "" : "dim"}`}>MD</div>
-            <div className={`dot ${wsConnected ? "" : "dim"}`}>TD</div>
-            <div className={`dot ${wsConnected ? "live" : "dim"}`}>
+            <div
+              className={`dot ${mdLive ? "" : "dim"}`}
+              title={mdLive ? "行情数据接收中" : "等待行情数据..."}
+            >
+              MD
+            </div>
+            <div
+              className={`dot ${tdLive ? "" : "dim"}`}
+              title={tdLive ? "交易网关已连接" : "等待交易网关..."}
+            >
+              TD
+            </div>
+            <div
+              className={`dot ${wsConnected ? "live" : "dim"}`}
+              title={wsConnected ? "Dispatcher 已连接" : "Dispatcher 未连接"}
+            >
               {connLabel}
             </div>
           </div>
@@ -819,6 +927,7 @@ function App() {
                 onSelectSym={setSelected}
                 onCancel={handleCancel}
                 onCancelAll={handleCancelAll}
+                onCloseAll={handleCloseAll}
               />
             </div>
           </div>
@@ -828,6 +937,7 @@ function App() {
               contract={contract}
               depth={depth}
               account={M.account}
+              positions={M.positions}
               onSubmit={handleSubmit}
             />
           </div>
@@ -855,19 +965,42 @@ function App() {
           </b>
         </div>
         <div className="feed">
-          <em>•</em>SHFE RB2510 +0.36% <em>•</em>CFFEX IF2506 +0.27% <em>•</em>
-          DCE I2509 −0.55%
-          <em>•</em>SHFE AU2506 +0.43% <em>•</em>CZCE MA509 −0.25% <em>•</em>INE
-          SC2506 +0.79%
+          {(() => {
+            const tickers = M.contracts
+              .filter((c) => c.last > 0 && c.prev > 0)
+              .sort((a, b) => (b.vol || 0) - (a.vol || 0))
+              .slice(0, 20);
+            if (tickers.length === 0) {
+              return (
+                <span style={{ color: "var(--fg-3)" }}>等待行情数据...</span>
+              );
+            }
+            return tickers.map((c, i) => {
+              const chg = ((c.last - c.prev) / c.prev) * 100;
+              const cls = chg >= 0 ? "up" : "down";
+              const sign = chg >= 0 ? "+" : "";
+              return (
+                <span key={c.sym}>
+                  {i > 0 && <em>•</em>}
+                  <span style={{ color: "var(--fg-3)" }}>{c.ex} </span>
+                  <span style={{ color: "var(--fg-0)", fontWeight: 500 }}>
+                    {c.sym}{" "}
+                  </span>
+                  <span className={cls}>
+                    {sign}
+                    {chg.toFixed(2)}%
+                  </span>
+                </span>
+              );
+            });
+          })()}
           {wsConnected ? (
-            <span style={{ color: "var(--short)" }}>
-              {" "}
-              <em>•</em>会话已建立 · 接收行情OK · 报单/撤单通道就绪
+            <span style={{ color: "var(--short)", marginLeft: 12 }}>
+              <em>•</em> 会话已建立 · 行情/报单通道就绪
             </span>
           ) : (
-            <span style={{ color: "var(--err)" }}>
-              {" "}
-              <em>•</em>未连接 · 请启动 server.py 连接 ctpbee Dispatcher
+            <span style={{ color: "var(--err)", marginLeft: 12 }}>
+              <em>•</em> 未连接 · 启动 server.py 连接 Dispatcher
             </span>
           )}
         </div>

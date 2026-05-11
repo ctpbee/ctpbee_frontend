@@ -383,7 +383,7 @@ function DepthBook({ contract, depth, tns, onClickPx }) {
 }
 
 /* ----- Order ticket ----- */
-function OrderTicket({ contract, depth, account, onSubmit }) {
+function OrderTicket({ contract, depth, account, positions, onSubmit }) {
   const [offset, setOffset] = React.useState("OPEN");
   const [type, setType] = React.useState("LIMIT");
   const [px, setPx] = React.useState(contract ? contract.last : 0);
@@ -403,6 +403,82 @@ function OrderTicket({ contract, depth, account, onSubmit }) {
     };
   }, [type]);
 
+  // ── Keyboard shortcuts ──
+  const submit = React.useCallback(
+    (dir, off) => {
+      onSubmit({
+        dir,
+        offset: off || offset,
+        type,
+        px: Number(px),
+        qty,
+        sym: contract.sym,
+        ex: contract.ex,
+      });
+    },
+    [offset, type, px, qty, contract, onSubmit],
+  );
+
+  React.useEffect(() => {
+    function onKeyDown(e) {
+      const tag = e.target.tagName;
+      const inInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+
+      // F1-F4: always work (even inside inputs — user adjusts price then submits)
+      if (e.key === "F1") {
+        e.preventDefault();
+        submit("LONG", "OPEN");
+        return;
+      }
+      if (e.key === "F2") {
+        e.preventDefault();
+        submit("SHORT", "OPEN");
+        return;
+      }
+      if (e.key === "F3") {
+        e.preventDefault();
+        submit("LONG", "CLOSE");
+        return;
+      }
+      if (e.key === "F4") {
+        e.preventDefault();
+        submit("SHORT", "CLOSE");
+        return;
+      }
+
+      // Below: only work when NOT focused on inputs
+      if (inInput) return;
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        document.activeElement?.blur();
+        return;
+      }
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        setQty((q) => q + 1);
+        return;
+      }
+      if (e.key === "-") {
+        e.preventDefault();
+        setQty((q) => Math.max(1, q - 1));
+        return;
+      }
+      if (e.key === "ArrowUp" && e.ctrlKey) {
+        e.preventDefault();
+        stepPx(1);
+        return;
+      }
+      if (e.key === "ArrowDown" && e.ctrlKey) {
+        e.preventDefault();
+        stepPx(-1);
+        return;
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [submit, type]);
+
   if (!contract) return null;
 
   const tick = contract.tick;
@@ -416,6 +492,13 @@ function OrderTicket({ contract, depth, account, onSubmit }) {
     depth && depth.asks && depth.asks.length > 0 && setPx(depth.asks[0].px);
 
   const nominal = (Number(px) || 0) * qty * contract.mult;
+
+  const posLong = positions.find(
+    (p) => p.sym === contract.sym && p.dir === "LONG",
+  );
+  const posShort = positions.find(
+    (p) => p.sym === contract.sym && p.dir === "SHORT",
+  );
 
   return (
     <div className="panel" style={{ height: "100%" }}>
@@ -568,6 +651,32 @@ function OrderTicket({ contract, depth, account, onSubmit }) {
         </div>
       </div>
       <div className="pfoot">
+        {posLong || posShort ? (
+          <>
+            {posLong && (
+              <span>
+                多 <b style={{ color: "var(--long)" }}>{posLong.vol} 手</b>
+                <span
+                  style={{ color: "var(--fg-3)", fontSize: 10, marginLeft: 4 }}
+                >
+                  @{fmtPx(posLong.avgPx, tick)}
+                </span>
+              </span>
+            )}
+            {posLong && posShort && <span className="sep" />}
+            {posShort && (
+              <span>
+                空 <b style={{ color: "var(--short)" }}>{posShort.vol} 手</b>
+                <span
+                  style={{ color: "var(--fg-3)", fontSize: 10, marginLeft: 4 }}
+                >
+                  @{fmtPx(posShort.avgPx, tick)}
+                </span>
+              </span>
+            )}
+            <span className="sep" />
+          </>
+        ) : null}
         <span>
           可用{" "}
           <b style={{ color: "var(--fg-1)" }}>
@@ -599,6 +708,7 @@ function BlotterTabs({
   onSelectSym,
   onCancel,
   onCancelAll,
+  onCloseAll,
 }) {
   const [tab, setTab] = React.useState("positions");
   const activeOrders = openOrders.filter(
@@ -643,6 +753,18 @@ function BlotterTabs({
               全撤 <span className="n">{activeOrders.length}</span>
             </button>
           )}
+          {tab === "positions" && positions.length > 0 && (
+            <button
+              className="btn ghost-short"
+              style={{ marginRight: 4 }}
+              onClick={() => onCloseAll && onCloseAll(positions)}
+            >
+              全平{" "}
+              <span className="n" style={{ marginLeft: 4 }}>
+                {positions.length}
+              </span>
+            </button>
+          )}
           <button className="btn icon" title="刷新">
             <Icon.Refresh />
           </button>
@@ -672,6 +794,23 @@ function BlotterTabs({
 }
 
 function PositionsTbl({ rows, onSelectSym }) {
+  const [sortKey, setSortKey] = React.useState("pnl");
+  const [sortDir, setSortDir] = React.useState(-1);
+
+  function toggleSort(key) {
+    if (sortKey === key) {
+      setSortDir((d) => -d);
+    } else {
+      setSortKey(key);
+      setSortDir(-1);
+    }
+  }
+
+  function sortArrow(key) {
+    if (sortKey !== key) return "";
+    return sortDir === -1 ? "↓" : "↑";
+  }
+
   if (!rows.length)
     return (
       <div className="empty">
@@ -679,28 +818,109 @@ function PositionsTbl({ rows, onSelectSym }) {
         <div>当前无持仓</div>
       </div>
     );
+
+  // Compute sorted inline — rows are mutated in-place by wsbridge, so useMemo would cache stale data
+  const sorted = (() => {
+    const arr = rows.map((p) => {
+      const c = window.MOCK.contracts.find((x) => x.sym === p.sym);
+      const sign = p.dir === "LONG" ? 1 : -1;
+      const pnl = (p.last - p.avgPx) * sign * p.vol * (c ? c.mult : 1);
+      const pnlPct = p.avgPx
+        ? (((p.last - p.avgPx) * sign) / p.avgPx) * 100
+        : 0;
+      return { ...p, _c: c, _pnl: pnl, _pnlPct: pnlPct };
+    });
+    arr.sort((a, b) => {
+      let va, vb;
+      switch (sortKey) {
+        case "sym":
+          va = a.sym;
+          vb = b.sym;
+          break;
+        case "dir":
+          va = a.dir;
+          vb = b.dir;
+          break;
+        case "vol":
+          va = a.vol;
+          vb = b.vol;
+          break;
+        case "ydVol":
+          va = a.ydVol;
+          vb = b.ydVol;
+          break;
+        case "tdVol":
+          va = a.tdVol;
+          vb = b.tdVol;
+          break;
+        case "avgPx":
+          va = a.avgPx;
+          vb = b.avgPx;
+          break;
+        case "last":
+          va = a.last;
+          vb = b.last;
+          break;
+        case "pnl":
+          va = a._pnl;
+          vb = b._pnl;
+          break;
+        case "pnlPct":
+          va = a._pnlPct;
+          vb = b._pnlPct;
+          break;
+        default:
+          va = a._pnl;
+          vb = b._pnl;
+      }
+      if (typeof va === "string") return sortDir * va.localeCompare(vb);
+      return sortDir * (va - vb);
+    });
+    return arr;
+  })();
+
   return (
     <table className="tbl">
       <thead>
         <tr>
-          <th>合约</th>
-          <th>方向</th>
-          <th>总持</th>
-          <th>昨仓</th>
-          <th>今仓</th>
+          <th style={{ cursor: "pointer" }} onClick={() => toggleSort("sym")}>
+            合约{sortArrow("sym")}
+          </th>
+          <th style={{ cursor: "pointer" }} onClick={() => toggleSort("dir")}>
+            方向{sortArrow("dir")}
+          </th>
+          <th style={{ cursor: "pointer" }} onClick={() => toggleSort("vol")}>
+            总持{sortArrow("vol")}
+          </th>
+          <th style={{ cursor: "pointer" }} onClick={() => toggleSort("ydVol")}>
+            昨仓{sortArrow("ydVol")}
+          </th>
+          <th style={{ cursor: "pointer" }} onClick={() => toggleSort("tdVol")}>
+            今仓{sortArrow("tdVol")}
+          </th>
           <th>冻结</th>
-          <th>开仓均价</th>
-          <th>最新价</th>
-          <th>浮动盈亏</th>
-          <th>盈亏%</th>
+          <th style={{ cursor: "pointer" }} onClick={() => toggleSort("avgPx")}>
+            开仓均价{sortArrow("avgPx")}
+          </th>
+          <th style={{ cursor: "pointer" }} onClick={() => toggleSort("last")}>
+            最新价{sortArrow("last")}
+          </th>
+          <th style={{ cursor: "pointer" }} onClick={() => toggleSort("pnl")}>
+            浮动盈亏{sortArrow("pnl")}
+          </th>
+          <th
+            style={{ cursor: "pointer" }}
+            onClick={() => toggleSort("pnlPct")}
+          >
+            盈亏%{sortArrow("pnlPct")}
+          </th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((p, i) => {
-          const c = window.MOCK.contracts.find((x) => x.sym === p.sym);
-          const sign = p.dir === "LONG" ? 1 : -1;
-          const pnl = (p.last - p.avgPx) * sign * p.vol * (c ? c.mult : 1);
-          const pnlPct = (((p.last - p.avgPx) * sign) / p.avgPx) * 100;
+        {sorted.map((p, i) => {
+          const c = p._c;
+          const pnl = p._pnl;
+          const pnlPct = p._pnlPct;
           return (
             <tr key={i} onClick={() => onSelectSym(p.sym)}>
               <td>
