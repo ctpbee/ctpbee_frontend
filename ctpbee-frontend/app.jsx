@@ -648,7 +648,7 @@ function App() {
                 color: step >= 2 ? "var(--amber)" : "var(--fg-3)",
               }}
             >
-              <span>{step >= 2 ? "●" : "○"}</span>
+              <span>○</span>
               <span>合约数据加载中... {M.contracts.length} 个</span>
             </div>
             <div

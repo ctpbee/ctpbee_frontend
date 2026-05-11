@@ -11,6 +11,8 @@ Message envelope: {"data": "<serialized_json>", "index": <int>}
 The inner data is a JSON-serialized ctpbee entity (dumps/loads via ProxyPollen).
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -78,7 +80,7 @@ def from_ctpbee(inner: dict) -> dict:
 clients: set[Any] = set()
 
 # ── Redis subscriber lifecycle ──
-redis_task: asyncio.Task | None = None
+redis_task: "asyncio.Task | None" = None
 redis_ready = asyncio.Event()
 redis_start_lock = asyncio.Lock()
 
@@ -86,7 +88,7 @@ redis_start_lock = asyncio.Lock()
 cached_contracts: dict[str, dict] = {}
 
 
-def parse_ctpbee_message(raw: str) -> dict | None:
+def parse_ctpbee_message(raw: str) -> "dict | None":
     """
     Parse a ctpbee DDDR/UDDR envelope:
       {"data": "<json_str>", "index": <int|null>}
@@ -189,10 +191,10 @@ async def redis_subscriber():
             await asyncio.sleep(3)
         finally:
             if pubsub:
-                try: await pubsub.close()
+                try: await pubsub.aclose()
                 except Exception: pass
             if r:
-                try: await r.close()
+                try: await r.aclose()
                 except Exception: pass
 
 
@@ -220,7 +222,7 @@ async def redis_publisher(msg: dict):
         print(f"[redis] publish error: {e}")
     finally:
         if r:
-            try: await r.close()
+            try: await r.aclose()
             except Exception: pass
 
 
@@ -387,7 +389,7 @@ def dev_runner():
     print(f"  watching: {', '.join(str(d) for d in WATCH_DIRS)}")
     print()
 
-    proc: subprocess.Popen | None = None
+    proc: "subprocess.Popen | None" = None
 
     def start():
         nonlocal proc
