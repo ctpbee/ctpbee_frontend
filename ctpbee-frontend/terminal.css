@@ -629,6 +629,20 @@ button {
 .mute {
     color: var(--fg-3);
 }
+
+.tbl .up {
+    color: var(--long);
+}
+.tbl .down {
+    color: var(--short);
+}
+.tbl .flat {
+    color: var(--flat);
+}
+.tbl .mute {
+    color: var(--fg-3);
+}
+
 .tag {
     display: inline-block;
     padding: 1px 6px;
