@@ -709,6 +709,8 @@ function BlotterTabs({
   onCancel,
   onCancelAll,
   onCloseAll,
+  onCloseRow,
+  onReverseRow,
 }) {
   const [tab, setTab] = React.useState("positions");
   const activeOrders = openOrders.filter(
@@ -775,7 +777,12 @@ function BlotterTabs({
       </div>
       <div className="pbody">
         {tab === "positions" && (
-          <PositionsTbl rows={positions} onSelectSym={onSelectSym} />
+          <PositionsTbl
+            rows={positions}
+            onSelectSym={onSelectSym}
+            onCloseRow={onCloseRow}
+            onReverseRow={onReverseRow}
+          />
         )}
         {tab === "open" && (
           <OpenOrdersTbl
@@ -793,7 +800,7 @@ function BlotterTabs({
   );
 }
 
-function PositionsTbl({ rows, onSelectSym }) {
+function PositionsTbl({ rows, onSelectSym, onCloseRow, onReverseRow }) {
   const [sortKey, setSortKey] = React.useState("pnl");
   const [sortDir, setSortDir] = React.useState(-1);
 
@@ -914,6 +921,7 @@ function PositionsTbl({ rows, onSelectSym }) {
           >
             盈亏%{sortArrow("pnlPct")}
           </th>
+          {(onCloseRow || onReverseRow) && <th>操作</th>}
         </tr>
       </thead>
       <tbody>
@@ -948,6 +956,30 @@ function PositionsTbl({ rows, onSelectSym }) {
                 {pnlPct >= 0 ? "+" : ""}
                 {pnlPct.toFixed(2)}%
               </td>
+              {(onCloseRow || onReverseRow) && (
+                <td onClick={(e) => e.stopPropagation()}>
+                  <div className="row-actions">
+                    {onCloseRow && (
+                      <button
+                        className="ra-btn close"
+                        title={`一键平仓 ${p.vol} 手(自动拆平今/平昨)`}
+                        onClick={() => onCloseRow(p)}
+                      >
+                        平
+                      </button>
+                    )}
+                    {onReverseRow && (
+                      <button
+                        className="ra-btn rev"
+                        title={`反手: 平 ${dirLabel(p.dir)} → 开 ${p.dir === "LONG" ? "空" : "多"} ${p.vol} 手`}
+                        onClick={() => onReverseRow(p)}
+                      >
+                        反
+                      </button>
+                    )}
+                  </div>
+                </td>
+              )}
             </tr>
           );
         })}
@@ -1640,6 +1672,338 @@ function MarketPanel({ contracts, onSelect, onToggleFav }) {
   );
 }
 
+/* ===========================================================
+   Account view — 权益构成 / 风险度 / 逐品种盈亏 / 持仓明细
+   =========================================================== */
+
+function riskLevel(r) {
+  if (r >= 0.7) return { label: "高危", cls: "risk-high" };
+  if (r >= 0.4) return { label: "警戒", cls: "risk-warn" };
+  return { label: "正常", cls: "risk-ok" };
+}
+
+function AccountPanel({ account, positions, contracts, onSelectSym }) {
+  // 逐合约聚合盈亏(多空合并), 按绝对值排序。rows 由 wsbridge 原地变更,
+  // 每次渲染重算(与 PositionsTbl 同策略)
+  const bySym = (() => {
+    const m = {};
+    positions.forEach((p) => {
+      const c = contracts.find((x) => x.sym === p.sym);
+      const sign = p.dir === "LONG" ? 1 : -1;
+      const pnl = (p.last - p.avgPx) * sign * p.vol * (c ? c.mult : 1);
+      const notional = p.avgPx * p.vol * (c ? c.mult : 1);
+      if (!m[p.sym]) m[p.sym] = { sym: p.sym, ex: p.ex, pnl: 0, notional: 0, legs: 0 };
+      m[p.sym].pnl += pnl;
+      m[p.sym].notional += notional;
+      m[p.sym].legs += 1;
+    });
+    return Object.values(m).sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
+  })();
+
+  const totalPnl = bySym.reduce((a, x) => a + x.pnl, 0);
+  const totalNotional = bySym.reduce((a, x) => a + x.notional, 0);
+  const maxAbs = Math.max(1e-9, ...bySym.map((x) => Math.abs(x.pnl)));
+  const risk = account.riskRatio || 0;
+  const rl = riskLevel(risk);
+
+  const cards = [
+    { lbl: "动态权益", val: `¥ ${fmtNum(account.balance, 0)}`, cls: "" },
+    { lbl: "可用资金", val: `¥ ${fmtNum(account.available, 0)}`, cls: "" },
+    { lbl: "保证金占用", val: `¥ ${fmtNum(account.margin, 0)}`, cls: "" },
+    {
+      lbl: "浮动盈亏",
+      val: `${totalPnl >= 0 ? "+" : "-"}¥ ${fmtNum(Math.abs(totalPnl), 0)}`,
+      cls: chgClass(totalPnl),
+    },
+    { lbl: "持仓名义本金", val: `¥ ${fmtNum(totalNotional, 0)}`, cls: "" },
+    { lbl: "持仓品种数", val: String(bySym.length), cls: "" },
+  ];
+
+  return (
+    <div className="view-scroll">
+      {/* ── 权益构成 ── */}
+      <div className="acct-cards">
+        {cards.map((c) => (
+          <div key={c.lbl} className="acct-card">
+            <div className="lbl">{c.lbl}</div>
+            <div className={`val ${c.cls}`}>{c.val}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── 风险度仪表 ── */}
+      <div className="panel acct-risk">
+        <div className="phead">
+          <span className="ttl">风险度</span>
+          <span className="sub">保证金占用 / 动态权益</span>
+          <span className={`risk-badge ${rl.cls}`}>{rl.label}</span>
+        </div>
+        <div className="pbody">
+          <div className="risk-bar">
+            <div className="fill" style={{ width: `${Math.min(100, risk * 100).toFixed(1)}%` }} />
+            <div className="mark m40" title="警戒 40%" />
+            <div className="mark m70" title="高危 70%" />
+          </div>
+          <div className="risk-nums">
+            <b className={rl.cls}>{(risk * 100).toFixed(2)}%</b>
+            <span>警戒 40% · 高危 70%</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ── 逐品种盈亏分布 ── */}
+      <div className="panel acct-pnl">
+        <div className="phead">
+          <span className="ttl">逐品种盈亏分布</span>
+          <span className="sub">浮动盈亏按合约聚合(多空合并) · 点击跳转交易视图</span>
+        </div>
+        <div className="pbody">
+          {bySym.length === 0 ? (
+            <div className="empty">
+              <Icon.Empty />
+              <div>当前无持仓</div>
+            </div>
+          ) : (
+            bySym.map((x) => (
+              <div
+                key={x.sym}
+                className="pnl-row"
+                onClick={() => onSelectSym(x.sym)}
+              >
+                <span className="sym">
+                  {x.sym}
+                  <em className="mute">{x.ex}</em>
+                </span>
+                <div className="bar-wrap">
+                  <div className="axis" />
+                  <div
+                    className={`fillbar ${x.pnl >= 0 ? "pos" : "neg"}`}
+                    style={{
+                      width: `${(Math.abs(x.pnl) / maxAbs) * 48}%`,
+                      [x.pnl >= 0 ? "left" : "right"]: "50%",
+                    }}
+                  />
+                </div>
+                <span className={`val ${chgClass(x.pnl)}`}>
+                  {x.pnl >= 0 ? "+" : ""}
+                  {fmtNum(x.pnl, 0)}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* ── 持仓明细(含名义本金) ── */}
+      <div className="panel acct-pos">
+        <div className="phead">
+          <span className="ttl">持仓明细</span>
+          <span className="sub">名义本金 = 均价 × 手数 × 乘数</span>
+        </div>
+        <div className="pbody">
+          {positions.length === 0 ? (
+            <div className="empty">
+              <Icon.Empty />
+              <div>当前无持仓</div>
+            </div>
+          ) : (
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>合约</th>
+                  <th>方向</th>
+                  <th>手数</th>
+                  <th>今/昨</th>
+                  <th>均价</th>
+                  <th>最新</th>
+                  <th>名义本金</th>
+                  <th>浮动盈亏</th>
+                </tr>
+              </thead>
+              <tbody>
+                {positions.map((p, i) => {
+                  const c = contracts.find((x) => x.sym === p.sym);
+                  const sign = p.dir === "LONG" ? 1 : -1;
+                  const pnl = (p.last - p.avgPx) * sign * p.vol * (c ? c.mult : 1);
+                  const notional = p.avgPx * p.vol * (c ? c.mult : 1);
+                  return (
+                    <tr key={i} onClick={() => onSelectSym(p.sym)}>
+                      <td>{p.sym} <span className="mute">{p.ex}</span></td>
+                      <td><span className={`tag ${p.dir}`}>{dirLabel(p.dir)}</span></td>
+                      <td>{p.vol}</td>
+                      <td>{p.tdVol}/{p.ydVol}</td>
+                      <td>{fmtPx(p.avgPx, c ? c.tick : 0.01)}</td>
+                      <td>{fmtPx(p.last, c ? c.tick : 0.01)}</td>
+                      <td>¥ {fmtNum(notional, 0)}</td>
+                      <td className={chgClass(pnl)}>
+                        {pnl >= 0 ? "+" : ""}
+                        {fmtNum(pnl, 0)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ===========================================================
+   Log view — 全屏订单日志 / 成交流水 / 搜索 / CSV 导出
+   =========================================================== */
+
+function exportCsv(name, rows, cols) {
+  const esc = (v) => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const head = cols.map((c) => esc(c.label)).join(",");
+  const lines = rows.map((r) => cols.map((c) => esc(c.get(r))).join(","));
+  // BOM 头: Excel 直接打开中文不乱码
+  const blob = new Blob(["﻿" + head + "\n" + lines.join("\n")],
+    { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function LogPanel({ orderLog, doneTrades, openOrders }) {
+  const [tab, setTab] = React.useState("log");
+  const [q, setQ] = React.useState("");
+
+  const ql = q.trim().toLowerCase();
+  const match = (s) => !ql || String(s).toLowerCase().includes(ql);
+
+  const logRows = orderLog.filter(
+    (l) => match(l.sym) || match(l.id) || match(l.msg) || match(l.evt),
+  );
+  const tradeRows = doneTrades.filter(
+    (t) => match(t.sym) || match(t.id) || match(t.orderId),
+  );
+
+  const doExport = () => {
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}`;
+    if (tab === "log") {
+      exportCsv(`ctpbee_orderlog_${stamp}.csv`, logRows, [
+        { label: "时间", get: (r) => r.time },
+        { label: "合约", get: (r) => r.sym },
+        { label: "事件", get: (r) => r.evt },
+        { label: "说明", get: (r) => r.msg },
+      ]);
+    } else {
+      exportCsv(`ctpbee_trades_${stamp}.csv`, tradeRows, [
+        { label: "时间", get: (r) => r.time },
+        { label: "成交ID", get: (r) => r.id },
+        { label: "订单ID", get: (r) => r.orderId },
+        { label: "合约", get: (r) => r.sym },
+        { label: "方向", get: (r) => r.dir },
+        { label: "开平", get: (r) => r.offset },
+        { label: "价格", get: (r) => r.px },
+        { label: "手数", get: (r) => r.vol },
+      ]);
+    }
+  };
+
+  return (
+    <div className="panel log-panel" style={{ height: "100%" }}>
+      <div className="tabs">
+        <div className={`tab ${tab === "log" ? "on" : ""}`} onClick={() => setTab("log")}>
+          订单日志<span className="count">{logRows.length}</span>
+        </div>
+        <div className={`tab ${tab === "trades" ? "on" : ""}`} onClick={() => setTab("trades")}>
+          成交流水<span className="count">{tradeRows.length}</span>
+        </div>
+        <div className="right" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            className="log-search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="搜索 合约/ID/说明…"
+            spellCheck={false}
+          />
+          <button className="btn ghost-short" onClick={doExport}>
+            导出 CSV
+          </button>
+        </div>
+      </div>
+      <div className="pbody">
+        {tab === "log" ? (
+          logRows.length === 0 ? (
+            <div className="empty">
+              <Icon.Empty />
+              <div>{ql ? "无匹配日志" : "暂无订单日志"}</div>
+            </div>
+          ) : (
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>合约</th>
+                  <th>订单</th>
+                  <th>事件</th>
+                  <th>说明</th>
+                </tr>
+              </thead>
+              <tbody>
+                {logRows.map((l, i) => (
+                  <tr key={i}>
+                    <td>{l.time}</td>
+                    <td>{l.sym}</td>
+                    <td className="mute">{l.id || "—"}</td>
+                    <td>
+                      <span className={`log-evt ${l.kind || "info"}`}>{l.evt}</span>
+                    </td>
+                    <td>{l.msg}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )
+        ) : tradeRows.length === 0 ? (
+          <div className="empty">
+            <Icon.Empty />
+            <div>{ql ? "无匹配成交" : "暂无成交"}</div>
+          </div>
+        ) : (
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>成交ID</th>
+                <th>合约</th>
+                <th>方向</th>
+                <th>开平</th>
+                <th>价格</th>
+                <th>手数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tradeRows.map((t, i) => (
+                <tr key={i}>
+                  <td>{t.time}</td>
+                  <td className="mute">{t.id}</td>
+                  <td>{t.sym}</td>
+                  <td><span className={`tag ${t.dir}`}>{dirLabel(t.dir)}</span></td>
+                  <td>{offsetLabel(t.offset)}</td>
+                  <td>{t.px}</td>
+                  <td>{t.vol}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
 Object.assign(window, {
   ContractList,
   QuoteHeader,
@@ -1647,4 +2011,6 @@ Object.assign(window, {
   OrderTicket,
   BlotterTabs,
   MarketPanel,
+  AccountPanel,
+  LogPanel,
 });

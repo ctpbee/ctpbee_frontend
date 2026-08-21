@@ -1,0 +1,30 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # 持久化可选; 本场景仅作行情中转, 重启丢缓存可接受
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      CTPBEE_REDIS_HOST: redis
+      CTPBEE_REDIS_PORT: "6379"
+      CTPBEE_HTTP_HOST: 0.0.0.0
+      CTPBEE_WS_HOST: 0.0.0.0
+      CTPBEE_HTTP_PORT: "8000"
+      CTPBEE_WS_PORT: "8765"
+    ports:
+      - "8000:8000"   # 前端页面 (http://<host>:8000/ctpbee-frontend/index.html)
+      - "8765:8765"   # WebSocket 桥
+    # ctpbee Dispatcher 需另行运行并指向本 redis:
+    #   其 config 中 RD_CLIENT_ADDR 填 "redis"(compose 网络内) 或宿主机 IP

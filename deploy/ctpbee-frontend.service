@@ -1,0 +1,20 @@
+[Unit]
+Description=ctpbee Terminal (WebSocket bridge + HTTP frontend)
+After=network-online.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 按实际部署路径与用户修改
+User=trader
+WorkingDirectory=/opt/ctpbee-frontend
+ExecStart=/opt/ctpbee-frontend/.venv/bin/python start.py
+Restart=always
+RestartSec=3
+Environment=CTPBEE_HTTP_HOST=0.0.0.0
+Environment=CTPBEE_WS_HOST=0.0.0.0
+# Environment=CTPBEE_REDIS_HOST=127.0.0.1
+# Environment=CTPBEE_REDIS_PORT=6379
+
+[Install]
+WantedBy=multi-user.target

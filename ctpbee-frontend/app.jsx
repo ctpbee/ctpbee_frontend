@@ -550,6 +550,94 @@ function App() {
     orders.forEach((o) => handleCancel(o.id));
   }
 
+  // ── 单腿平/开委托(涨跌停价限价, 保证成交) —— 全平/行内平仓/反手共用 ──
+  function sendLeg(sym, ex, direction, offset, vol, c, tag) {
+    const bridge = window.__wsbridge;
+    if (vol <= 0) return;
+    const isBuy = direction === "LONG";
+    const limitPx = isBuy
+      ? c.limit_up || c.last * 1.1
+      : c.limit_down || c.last * 0.9;
+    const index = Date.now() % 100000;
+    M.orderLog.unshift({
+      time: window.nowHMS(),
+      sym,
+      evt: "submit",
+      msg: `${tag}: ${dirZh(direction, offset)} ${vol}手 @${fmtPx(limitPx, c.tick)}`,
+      kind: "info",
+    });
+    bridge
+      .send("order", {
+        symbol: sym,
+        exchange: ex,
+        direction,
+        offset,
+        price: limitPx,
+        volume: vol,
+        order_type: "LIMIT",
+        index,
+      })
+      .catch((err) => {
+        M.orderLog.unshift({
+          time: window.nowHMS(),
+          sym,
+          evt: "rejected",
+          msg: `${tag}发送失败: ${err.message || "connection lost"}`,
+          kind: "err",
+        });
+      });
+  }
+
+  // 平掉一个持仓的全部仓位(SHFE/INE 自动拆平今/平昨)
+  function closePositionLegs(p, tag) {
+    const c = M.contracts.find((x) => x.sym === p.sym);
+    if (!c) {
+      pushToast({ kind: "err", title: "合约信息缺失", msg: `${p.sym} 无行情, 无法定价` });
+      return false;
+    }
+    const closeDir = p.dir === "LONG" ? "SHORT" : "LONG";
+    const isSplitEx = p.ex === "SHFE" || p.ex === "INE";
+    if (isSplitEx) {
+      sendLeg(p.sym, p.ex, closeDir, "CLOSETODAY", p.tdVol, c, tag);
+      sendLeg(p.sym, p.ex, closeDir, "CLOSEYESTERDAY", p.ydVol, c, tag);
+    } else {
+      sendLeg(p.sym, p.ex, closeDir, "CLOSE", p.vol, c, tag);
+    }
+    return true;
+  }
+
+  // ── 行内一键平仓(单个持仓) ──
+  function handleCloseRow(p) {
+    const bridge = window.__wsbridge;
+    if (!bridge || !bridge.isConnected()) {
+      pushToast({ kind: "err", title: "Not Connected", msg: "WebSocket 未连接，无法平仓" });
+      return;
+    }
+    if (!confirm(`确认平仓 ${p.sym} ${dirLabel(p.dir)} ${p.vol} 手？`)) return;
+    if (closePositionLegs(p, "平仓")) {
+      pushToast({ kind: "ok", title: "Close Sent", msg: `${p.sym} ${dirLabel(p.dir)} ${p.vol} 手` });
+      force((n) => n + 1);
+    }
+  }
+
+  // ── 行内反手(平掉当前仓 + 反向开同量) ──
+  function handleReverseRow(p) {
+    const bridge = window.__wsbridge;
+    if (!bridge || !bridge.isConnected()) {
+      pushToast({ kind: "err", title: "Not Connected", msg: "WebSocket 未连接，无法反手" });
+      return;
+    }
+    const newDir = p.dir === "LONG" ? "空" : "多";
+    if (!confirm(`确认反手 ${p.sym} ${dirLabel(p.dir)} ${p.vol} 手 → ${newDir} ${p.vol} 手？`)) return;
+    if (!closePositionLegs(p, "反手平")) return;
+    const c = M.contracts.find((x) => x.sym === p.sym);
+    if (c) {
+      sendLeg(p.sym, p.ex, p.dir === "LONG" ? "SHORT" : "LONG", "OPEN", p.vol, c, "反手开");
+    }
+    pushToast({ kind: "ok", title: "Reverse Sent", msg: `${p.sym} → ${newDir} ${p.vol} 手` });
+    force((n) => n + 1);
+  }
+
   // ── Close all positions ──
   function handleCloseAll(positions) {
     const bridge = window.__wsbridge;
@@ -563,57 +651,7 @@ function App() {
     }
     if (!confirm(`确认全部平仓？共 ${positions.length} 个持仓`)) return;
 
-    positions.forEach((p) => {
-      const c = M.contracts.find((x) => x.sym === p.sym);
-      if (!c) return;
-      const closeDir = p.dir === "LONG" ? "SHORT" : "LONG";
-
-      const sendClose = (offset, vol) => {
-        if (vol <= 0) return;
-        // 用涨跌停价打限价单：买平用涨停价，卖平用跌停价 → 保证成交
-        const isBuy = closeDir === "LONG";
-        const limitPx = isBuy
-          ? c.limit_up || c.last * 1.1
-          : c.limit_down || c.last * 0.9;
-        const index = Date.now() % 100000;
-        M.orderLog.unshift({
-          time: window.nowHMS(),
-          sym: p.sym,
-          evt: "submit",
-          msg: `全平: ${dirZh(closeDir, offset)} ${vol}手 @${fmtPx(limitPx, c.tick)}`,
-          kind: "info",
-        });
-        bridge
-          .send("order", {
-            symbol: p.sym,
-            exchange: p.ex,
-            direction: closeDir,
-            offset,
-            price: limitPx,
-            volume: vol,
-            order_type: "LIMIT",
-            index,
-          })
-          .catch((err) => {
-            M.orderLog.unshift({
-              time: window.nowHMS(),
-              sym: p.sym,
-              evt: "rejected",
-              msg: `全平发送失败: ${err.message || "connection lost"}`,
-              kind: "err",
-            });
-          });
-      };
-
-      // SHFE/INE require split close: 平今 (today) vs 平昨 (yesterday)
-      const isSplitEx = p.ex === "SHFE" || p.ex === "INE";
-      if (isSplitEx) {
-        sendClose("CLOSETODAY", p.tdVol);
-        sendClose("CLOSEYESTERDAY", p.ydVol);
-      } else {
-        sendClose("CLOSE", p.vol);
-      }
-    });
+    positions.forEach((p) => closePositionLegs(p, "全平"));
     pushToast({
       kind: "ok",
       title: "Close All Sent",
@@ -797,22 +835,15 @@ function App() {
           </div>
           <div
             className="item"
-            title="即将上线"
-            style={{ opacity: 0.45, cursor: "not-allowed" }}
+            style={view === "account" ? { color: "var(--amber)" } : { cursor: "pointer" }}
+            onClick={() => setView("account")}
           >
             账户
           </div>
           <div
             className="item"
-            title="即将上线"
-            style={{ opacity: 0.45, cursor: "not-allowed" }}
-          >
-            分析
-          </div>
-          <div
-            className="item"
-            title="即将上线"
-            style={{ opacity: 0.45, cursor: "not-allowed" }}
+            style={view === "log" ? { color: "var(--amber)" } : { cursor: "pointer" }}
+            onClick={() => setView("log")}
           >
             日志
           </div>
@@ -878,7 +909,27 @@ function App() {
       </div>
 
       {/* Workspace */}
-      {view === "market" ? (
+      {view === "account" ? (
+        <div className="workspace" style={{ gridTemplateColumns: "1fr" }}>
+          <AccountPanel
+            account={M.account}
+            positions={M.positions}
+            contracts={M.contracts}
+            onSelectSym={(sym) => {
+              setSelected(sym);
+              setView("trade");
+            }}
+          />
+        </div>
+      ) : view === "log" ? (
+        <div className="workspace" style={{ gridTemplateColumns: "1fr" }}>
+          <LogPanel
+            orderLog={M.orderLog}
+            doneTrades={M.doneTrades}
+            openOrders={M.openOrders}
+          />
+        </div>
+      ) : view === "market" ? (
         <div className="workspace" style={{ gridTemplateColumns: "1fr" }}>
           <MarketPanel
             contracts={M.contracts}
@@ -928,6 +979,8 @@ function App() {
                 onCancel={handleCancel}
                 onCancelAll={handleCancelAll}
                 onCloseAll={handleCloseAll}
+                onCloseRow={handleCloseRow}
+                onReverseRow={handleReverseRow}
               />
             </div>
           </div>

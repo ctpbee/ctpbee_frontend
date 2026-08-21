@@ -315,6 +315,7 @@
         for (let i = M.positions.length - 1; i >= 0; i--) {
           if (M.positions[i].vol <= 0) M.positions.splice(i, 1);
         }
+        recomputeRisk(M);
         break;
       }
 
@@ -346,6 +347,7 @@
           frozen: msg.frozen ?? M.account.frozen,
           pnl: msg.pnl ?? M.account.pnl,
         };
+        recomputeRisk(M);
         break;
       }
 
@@ -372,7 +374,11 @@
   }
 
   function statusToEvent(s) {
-    const m = { '提交中': 'submit', '未成交': 'accepted', '部分成交': 'partial',
+    // server.py 的 from_ctpbee 已把中文枚举翻成英文 NAME——这里以英文键为主,
+    // 中文键仅作双保险(防御直连 Dispatcher 未经桥接翻译的场景)
+    const m = { 'SUBMITTING': 'submit', 'NOTTRADED': 'accepted', 'PARTTRADED': 'partial',
+                 'ALLTRADED': 'filled', 'CANCELLED': 'cancelled', 'REJECTED': 'rejected',
+                 '提交中': 'submit', '未成交': 'accepted', '部分成交': 'partial',
                  '全部成交': 'filled', '已撤销': 'cancelled', '拒单': 'rejected' };
     return m[s] || s;
   }
@@ -381,6 +387,20 @@
     const m = { submit: 'info', accepted: 'ok', partial: 'amber',
                  filled: 'ok', cancelled: 'amber', rejected: 'err' };
     return m[e] || 'info';
+  }
+
+  // ── 风险度: 保证金占用 / 动态权益 ──
+  // 柜台回报里没有这个字段——此前顶栏与下单脚注显示的 0.00% 是假数据。
+  // 保证金占用 = 权益 − 可用(柜台口径); 权益取 balance(动态权益)。
+  // 在账户回报与持仓变化后各重算一次。
+  function recomputeRisk(M) {
+    const a = M.account;
+    const balance = Number(a.balance) || 0;
+    const available = Number(a.available) || 0;
+    if (a.margin === undefined || a.margin === null) {
+      a.margin = Math.max(0, balance - available);
+    }
+    a.riskRatio = balance > 0 ? a.margin / balance : 0;
   }
 
   // ── Connection management ──

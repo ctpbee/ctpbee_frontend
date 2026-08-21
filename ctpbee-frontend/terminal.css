@@ -1750,3 +1750,189 @@ button {
     position: relative;
     z-index: 1;
 }
+
+/* ===========================================================
+   Account & Log views + row quick actions (v0.6)
+   =========================================================== */
+
+/* ── 滚动视图容器(账户/日志全屏页) ── */
+.view-scroll {
+    overflow-y: auto;
+    padding: 14px 16px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+/* ── 账户: 权益卡 ── */
+.acct-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+}
+.acct-card {
+    background: var(--bg-1);
+    border: 1px solid var(--line-1);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+}
+.acct-card .lbl {
+    font-size: 10px;
+    color: var(--fg-3);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
+.acct-card .val {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--fg-0);
+}
+
+/* ── 账户: 风险度仪表 ── */
+.risk-badge {
+    margin-left: auto;
+    font-size: 10px;
+    padding: 2px 9px;
+    border-radius: 3px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+.risk-badge.risk-ok { color: var(--ok); border: 1px solid var(--ok); }
+.risk-badge.risk-warn { color: var(--amber); border: 1px solid var(--amber); }
+.risk-badge.risk-high { color: var(--err); border: 1px solid var(--err); }
+.risk-bar {
+    position: relative;
+    height: 14px;
+    background: var(--bg-3);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 8px 0 6px;
+}
+.risk-bar .fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, var(--ok) 0%, var(--ok) 35%, var(--amber) 60%, var(--err) 100%);
+    transition: width 0.4s ease;
+}
+.risk-bar .mark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--fg-3);
+    opacity: 0.7;
+}
+.risk-bar .m40 { left: 40%; }
+.risk-bar .m70 { left: 70%; }
+.risk-nums {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--fg-3);
+}
+.risk-nums b { font-size: 15px; }
+.risk-nums b.risk-ok { color: var(--ok); }
+.risk-nums b.risk-warn { color: var(--amber); }
+.risk-nums b.risk-high { color: var(--err); }
+
+/* ── 账户: 逐品种盈亏条 ── */
+.pnl-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 110px;
+    align-items: center;
+    gap: 12px;
+    padding: 5px 4px;
+    cursor: pointer;
+    border-bottom: 1px dashed var(--line-1);
+}
+.pnl-row:hover { background: var(--bg-2); }
+.pnl-row .sym {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg-1);
+}
+.pnl-row .sym .mute {
+    font-style: normal;
+    font-size: 9px;
+    color: var(--fg-4);
+    margin-left: 5px;
+}
+.pnl-row .bar-wrap {
+    position: relative;
+    height: 12px;
+    background: var(--bg-3);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.pnl-row .axis {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--line-2);
+}
+.pnl-row .fillbar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    opacity: 0.85;
+}
+.pnl-row .fillbar.pos { background: var(--long); }
+.pnl-row .fillbar.neg { background: var(--short); }
+.pnl-row .val {
+    font-family: var(--mono);
+    font-size: 12px;
+    text-align: right;
+}
+
+/* ── 日志视图 ── */
+.log-panel .tabs { padding-right: 8px; }
+.log-search {
+    background: var(--bg-2);
+    border: 1px solid var(--line-1);
+    border-radius: 4px;
+    color: var(--fg-1);
+    font-size: 11.5px;
+    padding: 5px 10px;
+    width: 220px;
+    outline: none;
+}
+.log-search:focus { border-color: var(--amber); }
+.log-evt {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 1px 7px;
+    border-radius: 3px;
+    letter-spacing: 0.5px;
+}
+.log-evt.info { color: var(--fg-2); background: var(--bg-3); }
+.log-evt.ok { color: var(--ok); background: rgba(46, 204, 113, 0.1); }
+.log-evt.amber { color: var(--amber); background: rgba(245, 176, 66, 0.1); }
+.log-evt.err { color: var(--err); background: rgba(255, 77, 77, 0.1); }
+
+/* ── 持仓行内快捷操作 ── */
+.row-actions {
+    display: flex;
+    gap: 5px;
+    justify-content: flex-start;
+}
+.ra-btn {
+    font-size: 10.5px;
+    padding: 2px 9px;
+    border-radius: 3px;
+    border: 1px solid var(--line-2);
+    background: var(--bg-2);
+    color: var(--fg-2);
+    cursor: pointer;
+    transition: all 0.12s;
+    line-height: 1.5;
+}
+.ra-btn:hover { border-color: var(--amber); color: var(--amber); }
+.ra-btn.close:hover { border-color: var(--short); color: var(--short); }
+.ra-btn.rev:hover { border-color: var(--long); color: var(--long); }

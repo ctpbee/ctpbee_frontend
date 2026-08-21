@@ -200,3 +200,43 @@ ctpbee-frontend/
 ## License
 
 MIT
+
+## 部署 (v0.6)
+
+### Docker / docker-compose (推荐)
+
+```bash
+docker compose up -d --build
+# 前端:    http://<host>:8000/ctpbee-frontend/index.html
+# 健康检查: http://<host>:8000/health
+# WebSocket 桥: ws://<host>:8765
+```
+
+compose 自带 Redis；ctpbee Dispatcher 侧将其 config 的 `RD_CLIENT_ADDR` 指向该 Redis（compose 网络内主机名为 `redis`，跨机用宿主 IP）。
+
+### systemd (裸机)
+
+```bash
+sudo cp deploy/ctpbee-frontend.service /etc/systemd/system/
+# 按实际路径/用户编辑 WorkingDirectory / User / ExecStart 后:
+sudo systemctl daemon-reload && sudo systemctl enable --now ctpbee-frontend
+```
+
+### 端口与配置
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| CTPBEE_HTTP_HOST/PORT | 127.0.0.1:8000 | 前端静态页 + /health |
+| CTPBEE_WS_HOST/PORT | 127.0.0.1:8765 | WebSocket 桥 |
+| CTPBEE_REDIS_HOST/PORT/DB | 127.0.0.1:6379/0 | Dispatcher Redis |
+
+`start.py` 支持 `--http-port N` / `--ws-port N` 快捷覆盖；`--dev` 文件变更自动重载。
+
+## 变更摘要 (v0.6)
+
+- **性能**: tick 广播并发化(gather + 单客户端 3s 超时踢出，消除队头阻塞)；tick 只计数不逐条打印(5s 汇总)；下单路径复用 Redis 连接
+- **修复**: 风险度恒为 0(现按 保证金占用/动态权益 计算)；订单日志事件着色(statusToEvent 英文键)
+- **账户视图**: 权益构成卡 / 风险度仪表(40% 警戒 70% 高危) / 逐品种盈亏分布 / 持仓名义本金明细
+- **日志视图**: 订单日志 + 成交流水全屏检索 / CSV 导出(带 BOM)
+- **持仓行内快捷操作**: 一键平仓(自动拆平今/平昨) / 反手
+- **部署**: Dockerfile + docker-compose(含 Redis 与健康检查) / systemd 单元 / /health 端点 / 端口参数

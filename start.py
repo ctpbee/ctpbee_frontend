@@ -45,7 +45,7 @@ def run_bridge(dev_mode=False):
 
 
 def run_http():
-    """启动 HTTP 静态文件服务器（前端页面）"""
+    """启动 HTTP 静态文件服务器（前端页面）+ /health 健康检查端点"""
     import http.server
     import socketserver
 
@@ -53,12 +53,28 @@ def run_http():
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(ROOT), **kwargs)
 
+        def do_GET(self):
+            # 健康检查: 供容器编排 / 监控探活
+            if self.path.split("?")[0] == "/health":
+                body = b'{"status": "ok"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            super().do_GET()
+
         def log_message(self, format, *args):
-            # 精简日志
+            # 精简日志: /health 探活与静态资源噪声不打
+            if "/health" in str(args[0]):
+                return
             if "/ctpbee-frontend/" in str(args[0]) or args[0] == "GET":
                 print(f"  [http] {args[0]}")
 
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer((HTTP_HOST, HTTP_PORT), Handler) as httpd:
+        print(f"  [http]  健康检查     → http://{HTTP_HOST}:{HTTP_PORT}/health")
         print(f"  [http]  前端服务已启动 → http://{HTTP_HOST}:{HTTP_PORT}")
         print(f"  [http]  交易终端     → {WS_URL}")
         try:
@@ -74,10 +90,20 @@ def main():
     print_banner()
 
     # 解析参数
-    args = set(sys.argv[1:])
-    no_bridge = "--no-bridge" in args
-    no_http = "--no-http" in args
-    dev_mode = "--dev" in args
+    argv = sys.argv[1:]
+    flags = set(a for a in argv if a.startswith("--"))
+    no_bridge = "--no-bridge" in flags
+    no_http = "--no-http" in flags
+    dev_mode = "--dev" in flags
+
+    # --http-port N / --ws-port N 覆盖默认端口(优先于环境变量之外的一层便捷入口)
+    global HTTP_PORT, WS_URL
+    for i, a in enumerate(argv):
+        if a == "--http-port" and i + 1 < len(argv):
+            HTTP_PORT = int(argv[i + 1])
+        if a == "--ws-port" and i + 1 < len(argv):
+            os.environ["CTPBEE_WS_PORT"] = argv[i + 1]
+    WS_URL = f"http://{HTTP_HOST}:{HTTP_PORT}/ctpbee-frontend/index.html"
 
     if no_bridge and no_http:
         print("  错误: 至少需要启动一个服务")

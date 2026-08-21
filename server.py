@@ -79,6 +79,12 @@ def from_ctpbee(inner: dict) -> dict:
 # ── Connected WebSocket clients ──
 clients: set[Any] = set()
 
+# ── 复用的 Redis 发布连接(见 redis_publisher) ──
+_pub_conn: "aioredis.Redis | None" = None
+
+# ── 单客户端发送超时: 超过即视为死客户端踢出, 防止队头阻塞 ──
+SEND_TIMEOUT = 3.0
+
 # ── Redis subscriber lifecycle ──
 redis_task: "asyncio.Task | None" = None
 redis_ready = asyncio.Event()
@@ -145,6 +151,45 @@ async def redis_subscriber():
     Subscribe to ctpbee Redis channels and broadcast parsed messages
     to all connected WebSocket clients.
     """
+    # ── 广播统计(节流打印): 全市场 tick 洪峰下逐条 print 会拖垮事件循环 ──
+    stats = {"ticks": 0, "orders": 0, "other": 0, "last_report": time.monotonic()}
+
+    async def send_one(ws, payload: str):
+        """并发发送: 单个慢客户端最多阻塞 SEND_TIMEOUT, 超时即踢出。
+
+        gather 并发调度 → 没有队头阻塞; 一个卡死的浏览器不再拖慢其他客户端。
+        """
+        try:
+            await asyncio.wait_for(ws.send(payload), timeout=SEND_TIMEOUT)
+        except (ConnectionClosed, OSError, asyncio.TimeoutError):
+            clients.discard(ws)
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
+    async def broadcast(payload: str):
+        if not clients:
+            return
+        await asyncio.gather(*(send_one(ws, payload) for ws in list(clients)))
+
+    def report_stats(msg_type: str):
+        """tick 只计数不打印(每 5s 汇总一次); 非行情消息保持逐条可见。"""
+        now = time.monotonic()
+        if msg_type == "tick":
+            stats["ticks"] += 1
+        elif msg_type in ("order", "trade"):
+            stats["orders"] += 1
+            print(f"[redis] recv type={msg_type} sym={''}")
+        else:
+            stats["other"] += 1
+        if now - stats["last_report"] >= 5.0:
+            stats["last_report"] = now
+            if stats["ticks"] or stats["orders"] or stats["other"]:
+                print(f"[redis] 5s: ticks={stats['ticks']} orders/trades={stats['orders']} "
+                      f"other={stats['other']} clients={len(clients)} contracts={len(cached_contracts)}")
+                stats.update(ticks=0, orders=0, other=0)
+
     while True:
         r = None
         pubsub = None
@@ -165,9 +210,7 @@ async def redis_subscriber():
                     continue
 
                 msg_type = parsed.get("type", "?")
-                if parsed.get("type") == "init":
-                    print(f"[redis] recv channel={message['channel']} type=init count={parsed.get('count', '?')}")
-                print(f"[redis] recv channel={message['channel']} type={msg_type}")
+                report_stats(msg_type)
 
                 # Cache contracts for new clients
                 if msg_type == "contract":
@@ -177,14 +220,7 @@ async def redis_subscriber():
                         if len(cached_contracts) % 50 == 0:
                             print(f"[redis] contracts cached: {len(cached_contracts)}")
 
-                payload = json.dumps(parsed, ensure_ascii=False)
-                gone = set()
-                for ws in clients.copy():
-                    try:
-                        await ws.send(payload)
-                    except (ConnectionClosed, OSError):
-                        gone.add(ws)
-                clients.difference_update(gone)
+                await broadcast(json.dumps(parsed, ensure_ascii=False))
 
         except (aioredis.ConnectionError, OSError) as e:
             print(f"[redis] connection error: {e}  (retrying in 3s...)")
@@ -208,22 +244,31 @@ async def ensure_redis_started():
 
 
 async def redis_publisher(msg: dict):
-    """Publish an upstream message (order / cancel / query) to Redis."""
-    r = None
-    try:
-        r = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB,
-                           decode_responses=True)
-        envelope = json.dumps({
-            "data": json.dumps(msg.get("data", msg)),
-            "index": msg.get("index", 0),
-        }, ensure_ascii=False)
-        await r.publish(ORDER_UP_KERNEL, envelope)
-    except Exception as e:
-        print(f"[redis] publish error: {e}")
-    finally:
-        if r:
-            try: await r.aclose()
-            except Exception: pass
+    """Publish an upstream message (order / cancel / query) to Redis.
+
+    复用模块级连接(下单路径每次新建连接会引入数十毫秒延迟与连接抖动);
+    连接失败时丢弃并在下次调用重建。
+    """
+    global _pub_conn
+    envelope = json.dumps({
+        "data": json.dumps(msg.get("data", msg)),
+        "index": msg.get("index", 0),
+    }, ensure_ascii=False)
+    for attempt in (1, 2):  # 第一次失败重建连接再试一次
+        try:
+            if _pub_conn is None:
+                _pub_conn = aioredis.Redis(host=REDIS_HOST, port=REDIS_PORT,
+                                           db=REDIS_DB, decode_responses=True)
+            await _pub_conn.publish(ORDER_UP_KERNEL, envelope)
+            return
+        except Exception as e:
+            print(f"[redis] publish error (attempt {attempt}): {e}")
+            if _pub_conn is not None:
+                try:
+                    await _pub_conn.aclose()
+                except Exception:
+                    pass
+                _pub_conn = None
 
 
 async def ws_handler(websocket):
