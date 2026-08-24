@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -180,7 +181,7 @@ async def redis_subscriber():
             stats["ticks"] += 1
         elif msg_type in ("order", "trade"):
             stats["orders"] += 1
-            print(f"[redis] recv type={msg_type} sym={''}")
+            print(f"[redis] recv type={msg_type} sym={parsed.get('symbol', '')}")
         else:
             stats["other"] += 1
         if now - stats["last_report"] >= 5.0:
@@ -363,7 +364,9 @@ def check_ctpbee():
         from ctpbee import __version__
     except ImportError:
         sys.exit("ctpbee not installed. Run: pip install ctpbee>=1.7.4")
-    parts = tuple(int(x) for x in __version__.split("."))
+    # 版本串可能带后缀("1.8.0rc1" 之类), int() 直接解析会崩——取前三个数字
+    nums = re.findall(r"\d+", __version__)
+    parts = tuple(int(x) for x in nums[:3]) if len(nums) >= 3 else (0, 0, 0)
     if parts < (1, 7, 4):
         sys.exit(f"ctpbee {__version__} is too old, need >= 1.7.4. Run: pip install ctpbee>=1.7.4")
 

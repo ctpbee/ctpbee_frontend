@@ -688,7 +688,12 @@ function OrderTicket({ contract, depth, account, positions, onSubmit }) {
           风险度{" "}
           <b
             style={{
-              color: account.riskRatio > 0.6 ? "var(--err)" : "var(--fg-1)",
+              // 与账户页风险仪表同一套阈值(40% 警戒 / 70% 高危), 两处
+              // 颜色不再各说各话
+              color:
+                account.riskRatio >= 0.7 ? "var(--err)"
+                : account.riskRatio >= 0.4 ? "var(--warn)"
+                : "var(--fg-1)",
             }}
           >
             {(account.riskRatio * 100).toFixed(2)}%

@@ -142,6 +142,14 @@
     return d.toTimeString().slice(0, 8);
   }
 
+  // ── 订单日志上限: 长会话下 unbounded 数组只会慢慢吃内存 ──
+  const ORDER_LOG_CAP = 2000;
+
+  function pushLog(M, entry) {
+    M.orderLog.unshift(entry);
+    if (M.orderLog.length > ORDER_LOG_CAP) M.orderLog.length = ORDER_LOG_CAP;
+  }
+
   // ── Apply incoming message to MOCK ──
   function applyMessage(msg) {
     const M = window.MOCK;
@@ -169,6 +177,16 @@
         if (t.last > 0) {
           const side = t.last >= (t.ask_price_1 || t.last) ? 'B' :
                        t.last <= (t.bid_price_1 || t.last) ? 'S' : 'B';
+          // 逐笔 qty: CTP 的 volume 是当日累计量(且接口未映射每笔
+          // LastVolume), 直接显示会是大且单调递增的数字——按 symbol
+          // 差分; 首见/累计回退(新交易日)时退回 last_volume(通常为0)
+          // 再退 1, 宁可保守也不显示累计量。
+          if (!M._cumVolBySym) M._cumVolBySym = {};
+          const prevCum = M._cumVolBySym[t.sym];
+          M._cumVolBySym[t.sym] = t.vol;
+          const delta = (typeof t.vol === 'number' && typeof prevCum === 'number'
+                         && prevCum > 0 && t.vol >= prevCum) ? t.vol - prevCum : null;
+          const qty = delta || t.last_volume || 1;
           const key = t.sym;
           if (!M._tnsBySym) M._tnsBySym = {};
           if (!M._tnsBySym[key]) M._tnsBySym[key] = [];
@@ -176,13 +194,13 @@
             sym: t.sym,
             time: nowHMS(),
             px: t.last,
-            qty: t.vol || t.last_volume || 1,
+            qty,
             side,
           });
           if (M._tnsBySym[key].length > 30) M._tnsBySym[key].pop();
           // Also maintain flat array for backward compat
           if (!M.tns) M.tns = [];
-          M.tns.unshift({ sym: t.sym, time: nowHMS(), px: t.last, qty: t.vol || t.last_volume || 1, side });
+          M.tns.unshift({ sym: t.sym, time: nowHMS(), px: t.last, qty, side });
           if (M.tns.length > 120) M.tns.length = 120;
         }
         break;
@@ -197,7 +215,7 @@
           const old = M.openOrders[idx];
           M.openOrders[idx] = { ...old, ...o };
           if (old.status !== o.status) {
-            M.orderLog.unshift({
+            pushLog(M, {
               time: o.time, id: o.id, sym: o.sym,
               evt: statusEvt,
               msg: `订单状态: ${old.status} → ${o.status} ${o.traded ? o.traded + '/' + o.vol + '已成交' : ''}`,
@@ -219,7 +237,7 @@
           if (recIdx >= 0) {
             const old = M.openOrders[recIdx];
             M.openOrders[recIdx] = { ...old, ...o };
-            M.orderLog.unshift({
+            pushLog(M, {
               time: o.time, id: o.id, sym: o.sym,
               evt: statusEvt,
               msg: `回单确认 ${old.id} → ${o.id} ${o.status}`,
@@ -227,7 +245,7 @@
             });
           } else {
             M.openOrders.unshift(o);
-            M.orderLog.unshift({
+            pushLog(M, {
               time: o.time, id: o.id, sym: o.sym,
               evt: statusEvt,
               msg: `新订单 ${o.dir} ${o.offset} ${o.vol}@${o.px}`,
@@ -245,9 +263,10 @@
 
       case 'trade': {
         const t = mapTrade(msg);
-        if (!M.doneTrades.find(x => x.id === t.id)) {
-          M.doneTrades.unshift(t);
-        }
+        // 去重必须包住整个处理体: Redis 至少一次投递(重连重放等)下,
+        // 只挡 doneTrades 入列会把持仓/开单成交量重复计算。
+        if (M.doneTrades.find(x => x.id === t.id)) break;
+        M.doneTrades.unshift(t);
         // Update position volume
         // Chinese futures convention:
         //   OPEN:  trade dir matches position dir (buy open → LONG pos)
@@ -289,7 +308,7 @@
             o.traded += t.vol;
             if (o.traded >= o.vol) {
               o.status = 'ALLTRADED';
-              M.orderLog.unshift({
+              pushLog(M, {
                 time: t.time, id: o.id, sym: o.sym, evt: 'filled',
                 msg: `全部成交 ${o.vol}@${t.px}`,
                 kind: 'ok',
